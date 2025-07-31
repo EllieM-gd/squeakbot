@@ -141,6 +141,7 @@ async def disarmtrap(ctx, num: int):
             return
     user_data[ctx.author.id].addSqueaks(-num)
     save_user_data()
+    trap_array.remove(trap)
     await ctx.send(f"You have disarmed {trap.trap_user}'s trap! You lose {num} squeaks, but the trap is no longer active. You saved 1 squeak by disarming it early!")
     
         
