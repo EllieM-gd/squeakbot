@@ -1,4 +1,4 @@
 discord.py
 python-dotenv
 discord~=2.3.2
-Flash~=3.0.3
+Flask~=3.0.3
