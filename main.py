@@ -5,9 +5,17 @@ from dotenv import load_dotenv
 import os
 import random
 import webserver
+import psycopg2
+import time
+from collections import defaultdict
+
+# Track squeak timestamps per user
+squeak_timestamps = defaultdict(list)
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
+DATABASE_URL = os.getenv('DATABASE_URL')
+conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
@@ -25,39 +33,69 @@ class User():
     
     def addSqueaks(self, amount: int):
         self.squeaks += amount
+        if self.squeaks < 0:
+            self.squeaks = 0 # Prevent negative squeaks
+
 
 user_data = dict()
 
 class Trap():
-    def __init__(self, trap_user: str, cost: int = 5):
+    def __init__(self, trap_user: str, cost: int = 5, location_id: int = 0):
         self.trap_user = trap_user
         self.cost = cost
+        self.location = location_id
     def trigger(self, trapped_user: str):
         return f"{self.trap_user} has trapped {trapped_user} in a mouse trap! They lose {self.cost} squeaks!"
+    def verify_location(self, location_id: int):
+        return self.location == location_id
 
 trap_array = []
 
-def save_user_data(filename="user_data.txt"):
-    with open(filename, "w", encoding="utf-8") as f:
-        for user_id, user in user_data.items():
-            f.write(f"{user_id},{user.name},{user.squeaks}\n")
+def init_db():
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                name TEXT,
+                squeaks INTEGER
+            );
+        """)
+        conn.commit()
 
-def load_user_data(filename="user_data.txt"):
-    if not os.path.exists(filename):
-        return
-    with open(filename, "r", encoding="utf-8") as f:
-        for line in f:
-            parts = line.strip().split(",")
-            if len(parts) == 3:
-                user_id, name, squeaks = parts
-                user_data[int(user_id)] = User(name, int(squeaks))
+def save_user_data():
+    with conn.cursor() as cur:
+        for user_id, user in user_data.items():
+            cur.execute("""
+                INSERT INTO users (user_id, name, squeaks)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id)
+                DO UPDATE SET name = EXCLUDED.name, squeaks = EXCLUDED.squeaks;
+            """, (user_id, user.name, user.squeaks))
+        conn.commit()
+
+
+def load_user_data():
+    with conn.cursor() as cur:
+        cur.execute("SELECT user_id, name, squeaks FROM users;")
+        for user_id, name, squeaks in cur.fetchall():
+            user_data[user_id] = User(name, squeaks)
+
+
 
 
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name} - {bot.user.id}')
     print('------')
+    init_db() # Initialize the database
     load_user_data()
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"Slow down! You can use this command again in {error.retry_after:.1f} seconds.")
+    else:
+        raise error  # re-raise other errors so you see them during development
 
 @bot.event
 async def on_message(message):
@@ -68,19 +106,33 @@ async def on_message(message):
 
     if "squeak" == message.content.lower():
         await message.channel.send(random.choice(squeaks_strings))
+
         if message.author.id not in user_data:
             user_data[message.author.id] = User(message.author.name, 0)
 
-        if len(trap_array) > 0:
-            for trap in trap_array:
-                if trap.trap_user != message.author.name:
-                    await message.channel.send(trap.trigger(message.author.name))
-                    user_data[message.author.id].addSqueaks(-trap.cost)
-                    trap_array.remove(trap)
-                    save_user_data()
-                    return
+        # Check cooldown
+        now = time.time()
+        timestamps = squeak_timestamps[message.author.id]
+
+        # Remove timestamps older than 60 seconds
+        timestamps = [ts for ts in timestamps if now - ts < 60]
+        squeak_timestamps[message.author.id] = timestamps
+
+        if len(timestamps) >= 5:
+            await message.channel.reply("(No Points) You have already squeaked 5 times in the last 60 seconds!")
+            return  # User already squeaked 5 times in the last 60 seconds — no points
+
+        # Change this to be more luck based on if you trigger a trap
+        for trap in trap_array:
+            if trap.verify_location(message.channel.id) and trap.trap_user != message.author.name and random.randint(0, 100) < 30:  # 30% chance to trigger a trap
+                await message.channel.send(trap.trigger(message.author.name))
+                user_data[message.author.id].addSqueaks(-trap.cost)
+                trap_array.remove(trap)
+                save_user_data()
+                return
         
         user_data[message.author.id].addSqueaks(1)
+        squeak_timestamps[message.author.id].append(now)
         save_user_data()
 
 # !sqcount
@@ -91,6 +143,20 @@ async def sqcount(ctx):
     await ctx.send(f'You have squeaked {user_data[ctx.author.id].squeaks} times!')
 
 @bot.command()
+@commands.cooldown(1, 60.0, commands.BucketType.channel)
+async def sqleaderboard(ctx):
+    if len(user_data) == 0:
+        await ctx.send("No users have squeaked yet!")
+        return
+    # Sort and display the top 10 users by squeaks
+    if ctx.author.id not in user_data:
+        user_data[ctx.author.id] = User(ctx.author.name, 0)
+    sorted_users = sorted(user_data.items(), key=lambda x: x[1].squeaks, reverse=True)
+    leaderboard = "\n".join([f"{user[1].name}: {user[1].squeaks} squeaks" for user in sorted_users[:10]])
+    await ctx.send(f"**Squeak Leaderboard:**\n{leaderboard}")
+
+@bot.command()
+@commands.cooldown(1, 60.0, commands.BucketType.user)
 async def settrap(ctx, num: int = 5):
     # if author has done nothing yet make a profile for them
     if ctx.author.id not in user_data:
@@ -104,12 +170,14 @@ async def settrap(ctx, num: int = 5):
     if ctx.author.id in [trap.trap_user for trap in trap_array]:
         await ctx.send("You already have a trap set!")
         return
-    user_data[ctx.author.id].addSqueaks(-num)
-    trap = Trap(ctx.author.name, num)
+    user_data[ctx.author.id].addSqueaks(-num) # Deduct the cost of the trap from the user's squeaks
+    trap = Trap(ctx.author.name, num, ctx.channel.id) # Create a trap and add it to the trap array
     trap_array.append(trap)
-    await ctx.message.delete()
-    save_user_data()
     await ctx.send(f"{ctx.author.name} has set a mouse trap!")
+    #only delete if in a channel where the bot can delete messages
+    if ctx.channel.permissions_for(ctx.guild.me).manage_messages:
+        await ctx.message.delete() # Delete the user message
+    save_user_data()
 
 @bot.command()
 async def disarmtrap(ctx, num: int):
@@ -126,31 +194,43 @@ async def disarmtrap(ctx, num: int):
     if len(trap_array) == 0:
         await ctx.send("There are no traps set!")
         return
-    if num != trap_array[0].cost - 2:
-        await ctx.send(f"Failed to disarm the trap! You need to provide the cost of the trap minus 2 ({trap_array[0].cost - 2}). You will still lose squeaks for this failed attempt.")
-        user_data[ctx.author.id].addSqueaks(-num)
+    # get the first trap that is not set by the user
+    for trap in trap_array:
+        if trap.trap_user == ctx.author.name:
+            continue
+        if trap.verify_location(ctx.channel.id):
+            temptrap = trap
+            break
+    if temptrap is None:
+        await ctx.send("No traps found in this channel that you can disarm!")
+        return
+    if num != temptrap.cost - 2:
+        await ctx.send(f"Failed to disarm the trap! You need to provide the cost of the trap minus 2 ({temptrap.cost - 2}). You will still lose half of the squeaks you wagered.")
+        user_data[ctx.author.id].addSqueaks(-num // 2)
         save_user_data()
         return
-    # get the first trap that is not set by the user
-    trap = trap_array[0]
-    if trap.trap_user == ctx.author.name:
-        if len(trap_array) > 1:
-            trap = trap_array[1]
-        else:
-            await ctx.send("You cannot disarm your own trap!")
-            return
-    user_data[ctx.author.id].addSqueaks(-num)
+    if random.randint(0, 100) < 5:
+        await ctx.send(f"You accidently set off the trap while attempting to disarm it! You lose all the squeaks you wagered and they go to {temptrap.trap_user}.")
+        user_data[ctx.author.id].addSqueaks(-num)
+        user_data[temptrap.trap_user].addSqueaks(num)
+        trap_array.remove(temptrap)
+        save_user_data()
+        return
     save_user_data()
-    trap_array.remove(trap)
-    await ctx.send(f"You have disarmed {trap.trap_user}'s trap! You lose {num} squeaks, but the trap is no longer active. You saved 1 squeak by disarming it early!")
-    
+    await ctx.send(f"You successfully disarmed {temptrap.trap_user}'s trap! You keep the amount of squeaks you wagered.")
+    trap_array.remove(temptrap)
+
         
 @bot.command()
+@commands.cooldown(1, 30.0, commands.BucketType.channel)
 async def seetraps(ctx):
     if len(trap_array) == 0:
         await ctx.send("There are no traps set!")
         return
-    trap_list = "\n".join([f"{trap.trap_user} has a trap set!" for trap in trap_array])
+    trap_list = "\n".join([f"{trap.trap_user} has a trap set!" for trap in trap_array if trap.verify_location(ctx.channel.id)])
+    if not trap_list:
+        await ctx.send("There are no traps set in this channel!")
+        return
     await ctx.send(f"Current traps:\n{trap_list}")
 
 webserver.keep_alive()

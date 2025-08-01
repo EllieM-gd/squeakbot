@@ -2,3 +2,4 @@ discord.py
 python-dotenv
 discord~=2.3.2
 Flask~=3.0.3
+psycopg2-binary
