@@ -102,11 +102,15 @@ async def on_message(message):
     if message.author == bot.user:
         return
     
-    await bot.process_commands(message)
+    if message.channel.name == "squeak-battles":
+        await bot.process_commands(message)
+
 
     if "squeak" == message.content.lower():
         await message.channel.send(random.choice(squeaks_strings))
 
+        if message.channel.name != "squeak-battles":
+            return  # Only process squeaks in the squeak-battles channel
         if message.author.id not in user_data:
             user_data[message.author.id] = User(message.author.name, 0)
 
