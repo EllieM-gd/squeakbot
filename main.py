@@ -119,7 +119,7 @@ async def on_message(message):
         squeak_timestamps[message.author.id] = timestamps
 
         if len(timestamps) >= 5:
-            await message.channel.reply("(No Points) You have already squeaked 5 times in the last 60 seconds!")
+            await message.channel.send("(No Points) You have already squeaked 5 times in the last 60 seconds!")
             return  # User already squeaked 5 times in the last 60 seconds — no points
 
         # Change this to be more luck based on if you trigger a trap
