@@ -138,6 +138,11 @@ async def on_message(message):
         user_data[message.author.id].addSqueaks(1)
         squeak_timestamps[message.author.id].append(now)
         save_user_data()
+    elif "gay" in message.content.lower() or "yuri" in message.content.lower():
+        if message.channel.name in ["vent-here", "ranting"]: return  # Don't react in venting or ranting channels
+        if random.randint(0, 100) < 10:  # 10% chance to gay react
+            await message.add_reaction("🏳️‍🌈")
+
 
 # !sqcount
 @bot.command()
