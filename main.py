@@ -142,7 +142,12 @@ async def on_message(message):
         if message.channel.name in ["vent-here", "ranting"]: return  # Don't react in venting or ranting channels
         if random.randint(0, 100) < 10:  # 10% chance to gay react
             await message.add_reaction("🏳️‍🌈")
-
+    elif "cheese" in message.content.lower():
+        if message.channel.name in ["vent-here", "ranting"]: return
+        if random.randint(0, 100) < 50:  # 50% chance to react with cheese
+            return
+        #reply to message
+        await message.reply("*steals cheese*")
 
 # !sqcount
 @bot.command()
